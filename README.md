@@ -1,5 +1,5 @@
 # splinify
-
+![Splinify_img1](https://raw.githubusercontent.com/wayneyip/splinify/master/splinify_gif1.gif)
 
 Maya Python tool to automate spline IK joint chain setup on two given joints.
 
