@@ -4,9 +4,9 @@
 Maya Python tool to automate spline IK joint chain setup on two given joints.
 
 ## Features
-- Automatic setup of up to 100 sub-joints within 1 second
-- Interpolated coloring of control curves based on user-input colors
-- Custom attribute to adjust length of joint chain along spline
+- Automatic stretchy spine setup (with volume-preserving squash and stretch)
+- Automatic cluster controls setup (with adjustable joint chain length along spline)
+- Option to automate joint chain setup (up to 100 joints) or use existing joints
 
 ## Instructions
 
