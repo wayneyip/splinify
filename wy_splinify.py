@@ -5,43 +5,54 @@
 import maya.cmds as cmds
 import maya.mel as mel
 
-def splinify(startJoint, endJoint, boneNum, handleNum, startColor, endColor):
-
-    # Validate start joint
-    if (not cmds.objExists(startJoint)
-        or cmds.nodeType(startJoint) != 'joint' 
+def splinify(
+        jointChainOption, startJoint, endJoint, boneNum, 
+        splineTypeOption, handleNum, startColor, endColor, preserveVolume
     ):
-        cmds.confirmDialog(title='Bendify Error', message='Invalid start joint')
-        return
-    
-    # Validate end joint
-    if (not cmds.objExists(endJoint)
-        or cmds.nodeType(endJoint) != 'joint'
-    ):
-        cmds.confirmDialog(title='Bendify Error', message='Invalid end joint')
-        return
 
-    bones = createBones(startJoint, endJoint, boneNum)
+    jointChain = None
+    namingPrefix = None
 
-    splineIkHandle, splineCurve = createSplineIK(bones, handleNum)
+    if jointChainOption == 'Create From Start/End Joints':
 
-    lengthCtrl = createLengthCtrl(bones, startJoint)
+        jointChain = createJointChain(startJoint, endJoint, boneNum)
 
-    clusters, clusterCtrls = clusterCurve(splineCurve)
+    elif jointChainOption == 'Use Existing Joint Chain':
 
-    reconnectJoints(startJoint, endJoint, bones, clusters)
+        jointChain = getJointChain(startJoint, endJoint)
 
-    groupAll(
-        bones, splineIkHandle, splineCurve,
-        clusters, clusterCtrls, lengthCtrl
-    )
+    splineIkHandle, splineCurve = createSplineIK(jointChain, handleNum)
 
-    recolorCtrls(startColor, endColor, clusterCtrls)
+    if splineTypeOption == 'Cluster Controls':
 
+        lengthCtrl = createLengthCtrl(jointChain, startJoint)
 
-def createBones(startJoint, endJoint, boneNum):
+        clusters, clusterCtrls = clusterCurve(splineCurve)
 
-    bones = []
+        if jointChainOption == 'Create From Start/End Joints':
+            reconnectJoints(startJoint, endJoint, jointChain, clusters)
+
+        groupAll(
+            splineIkHandle, splineCurve,
+            clusters, clusterCtrls, lengthCtrl
+        )
+
+        recolorCtrls(startColor, endColor, clusterCtrls)
+
+    elif splineTypeOption == 'Stretchy Spine':
+
+        startBindJoint, endBindJoint, startBindControl, endBindControl = createBindJoints(startJoint, endJoint, splineCurve)
+
+        makeStretchy(splineCurve, jointChain, preserveVolume)
+
+        cmds.group(splineIkHandle, splineCurve, 
+            startBindJoint, endBindJoint, startBindControl, endBindControl, 
+            name='str_all_GRP'
+        )
+
+def createJointChain(startJoint, endJoint, boneNum):
+
+    jointChain = []
     cmds.select(clear=1)
 
     # Get distance between start and end joints
@@ -77,17 +88,17 @@ def createBones(startJoint, endJoint, boneNum):
         
         # Orient previous bone to newly created bone
         if i >= 1:
-            previousBone = bones[len(bones) - 1]
+            previousBone = jointChain[len(jointChain) - 1]
             cmds.joint(
                 previousBone, edit=1,
                 orientJoint='xyz',
                 secondaryAxisOrient='yup'
             )
-        bones.append(bone)
+        jointChain.append(bone)
 
     # Create end bone
     bone = cmds.joint(position=endPos, name='spl_%s_J' % boneNum)
-    previousBone = bones[len(bones) - 1]
+    previousBone = jointChain[len(jointChain) - 1]
     orient = cmds.joint(
         previousBone, q=1,
         orientation=1
@@ -97,30 +108,45 @@ def createBones(startJoint, endJoint, boneNum):
         orientation=orient,
         radius=cmds.joint(startJoint, q=1, radius=1)[0]
     )
-    bones.append(bone)
+    jointChain.append(bone)
 
-    return bones 
+    return jointChain 
 
 
-def createSplineIK(bones, handleNum):
+def getJointChain(startJoint, endJoint):
+
+    jointChain = [endJoint]
+    parentJoint = cmds.listRelatives(endJoint, parent=1)[0]
+
+    while parentJoint != startJoint:
+        jointChain.append(parentJoint)
+        parentJoint = cmds.listRelatives(parentJoint, parent=1)[0]
+    
+    jointChain.append(startJoint)
+    jointChain.reverse()
+
+    return jointChain
+
+
+def createSplineIK(jointChain, handleNum):
     
     splineIk = cmds.ikHandle(
         solver='ikSplineSolver', 
-        startJoint=bones[0], 
-        endEffector=bones[len(bones)-1],
-        name='spl_spline_IK',
+        startJoint=jointChain[0], 
+        endEffector=jointChain[len(jointChain)-1],
+        name='spl_spline_IK_#',
         numSpans=handleNum-2 
     )
     splineIkHandle = splineIk[0]
     splineCurve = splineIk[2]
-    splineCurve = cmds.rename(splineCurve, 'spl_spline_CRV')
+    splineCurve = cmds.rename(splineCurve, 'spl_spline_CRV_#')
 
     return splineIkHandle, splineCurve
 
 
-def createLengthCtrl(bones, startJoint):
+def createLengthCtrl(jointChain, startJoint):
 
-    startJointPos = cmds.xform(startJoint, q=1, translation=1)
+    startJointPos = cmds.xform(startJoint, q=1, translation=1, worldSpace=1)
     lengthCtrl = createCubeControl('spl_length_CTRL', startJointPos)
     cmds.scale(2, 2, 2, lengthCtrl)
 
@@ -140,7 +166,7 @@ def createLengthCtrl(bones, startJoint):
     cmds.setAttr(lengthCtrl + '.scaleZ', lock=1, keyable=False)
 
     # Scale every bone's length by this multiplier
-    for bone in bones:
+    for bone in jointChain:
         cmds.connectAttr(lengthCtrl + '.length', bone + '.scaleX')
 
     return lengthCtrl
@@ -173,17 +199,17 @@ def clusterCurve(splineCurve):
     return clusters, clusterCtrls
 
 
-def reconnectJoints(startJoint, endJoint, bones, clusters):
+def reconnectJoints(startJoint, endJoint, jointChain, clusters):
 
     cmds.pointConstraint(startJoint, clusters[0], maintainOffset=1)
 
     # Unparent end joint, point constrain to spline IK handle
     cmds.parent(endJoint, world=1)
-    cmds.pointConstraint(bones[len(bones)-1], endJoint, maintainOffset=1)
+    cmds.pointConstraint(jointChain[len(jointChain)-1], endJoint, maintainOffset=1)
 
 
 def groupAll(
-        bones, splineIkHandle, splineCurve,
+        splineIkHandle, splineCurve,
         clusters, clusterCtrls, lengthCtrl
     ):
 
@@ -211,12 +237,6 @@ def groupAll(
         clusterGrp, ctrlGrp, splineGrp,
         name='spl_all_GRP'
     )
-
-
-def removeSuffix(name):
-    splitName = name.split('_')
-    splitName.pop()
-    return '_'.join(splitName)
 
 
 def createCubeControl(cubeName, pos):
@@ -264,3 +284,72 @@ def recolorCtrls(startColor, endColor, ctrls):
             startColor[2] + (float(i) / (numCtrls-1)) * colorDiff[2]
         ]
         cmds.color(ctrl, rgbColor=color)
+
+
+def createBindJoints(startJoint, endJoint, splineCurve):
+
+    def createBindJoint(joint):
+
+        bindJoint = cmds.duplicate(joint, parentOnly=1, n=joint.replace('_J', '_bind_J'))
+        bindJointPos = cmds.xform(joint, q=1, rotatePivot=1, worldSpace=1)
+        bindControl = createCubeControl(joint.replace('_J', '_bind_CTRL'), bindJointPos)
+        cmds.makeIdentity(bindControl, apply=1, t=1, r=1, s=1, n=0)
+        cmds.parentConstraint(bindControl, bindJoint, maintainOffset=1)
+ 
+        bindJointParent = cmds.listRelatives(bindJoint, parent=1)
+        if bindJointParent != None and bindJointParent[0] != 'world':
+            cmds.parent(bindJoint, world=1)
+
+        return bindJoint, bindControl
+
+    startBindJoint, startBindControl = createBindJoint(startJoint)
+    endBindJoint, endBindControl = createBindJoint(endJoint)
+
+    cmds.skinCluster(startBindJoint, endBindJoint, splineCurve, 
+        toSelectedBones=True, 
+        skinMethod=0,           # classic linear skinning
+        normalizeWeights=1
+    )
+
+    return startBindJoint, endBindJoint, startBindControl, endBindControl
+
+
+def makeStretchy(curve, jointChain, preserveVolume):
+
+    # Create curveInfo node to get arclength 
+    curveInfo = cmds.arclen(curve, constructionHistory=1)
+    curveInfo = cmds.rename(curveInfo, curve + 'Info')
+
+    # --------- Stretch ----------
+
+    # Create division node
+    arclenDiv = curveInfo.replace('Info', '_arclen_MD')
+    arclenDiv = cmds.createNode('multiplyDivide', name=arclenDiv)
+    cmds.setAttr(arclenDiv + '.operation', 2) # divide
+
+    # Divide curve's current arclength by base arclength,
+    # to get a multiplier for bone length
+    cmds.connectAttr(curveInfo + '.arcLength', arclenDiv + '.input1X')
+    baseArclen = cmds.getAttr(arclenDiv + '.input1X')
+    cmds.setAttr(arclenDiv + '.input2X', baseArclen)
+
+    # --------- Squash ----------
+
+    powerDiv = None
+    if preserveVolume:
+        # # Create power node
+        powerDiv = curveInfo.replace('Info', '_power_MD')
+        powerDiv = cmds.createNode('multiplyDivide', name=powerDiv)
+        cmds.setAttr(powerDiv + '.operation', 3) # power
+
+        # # Raise multiplier by power -1/2 (volume preservation)
+        cmds.connectAttr(arclenDiv + '.outputX', powerDiv + '.input1X')
+        cmds.setAttr(powerDiv + '.input2X', -0.5)
+
+    # Scale each bone's length by the raised multiplier
+    for joint in jointChain:
+        cmds.connectAttr(arclenDiv + '.outputX', joint + '.scaleX')
+        
+        if preserveVolume:
+            cmds.connectAttr(powerDiv + '.outputX', joint + '.scaleY')
+            cmds.connectAttr(powerDiv + '.outputX', joint + '.scaleZ')
